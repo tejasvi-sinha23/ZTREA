@@ -1,200 +1,38 @@
-# ZTREA — Zero-Trust Remote Execution Agent
+# ZTREA: Zero-Trust Remote Execution Agent
 
-A Python toolkit that combines **file notarization** (sign & verify files offline) with a **Zero-Trust Remote Execution Agent** — a FastAPI-based server that only runs commands from cryptographically signed, timestamped, nonce-protected requests.
+A cryptographically secure, API-driven daemon for executing infrastructure commands remotely. 
 
----
+ZTREA replaces traditional, trust-based SSH access with a mathematically verifiable execution pipeline. It ensures that a server only executes commands dispatched by an authenticated administrator and provides the client with a cryptographic receipt proving the execution results.
 
-## Features
+## Security Architecture
 
-- **RSA Key Generation** — 2048-bit RSA key pairs saved as PEM files
-- **File Signing & Verification** — sign any file; detect any byte-level tampering
-- **Zero-Trust Command Execution** — server only executes commands from authenticated clients
-- **Replay Attack Protection** — every request carries a timestamp (30 s window) and a one-time UUID nonce
-- **Signed Execution Receipts** — server signs and returns proof of execution back to the client
-- **Shell Injection Prevention** — `shlex.split` + `shell=False` subprocess execution
-- **Legacy Socket Demo** — original raw TCP client/server pair for learning purposes
+ZTREA operates on a strict Zero-Trust model. Every request is treated as hostile until it passes a multi-stage verification pipeline:
 
----
-
-## Project Structure
-
-```
-Secure File Notary CLI/
-│
-├── crypto_engine.py      # Core: key generation, signing, verification, nonce cache
-│
-├── server_agent.py       # FastAPI ZTREA server — verifies requests, runs commands, returns receipts
-├── client_cli.py         # CLI client — signs commands, dispatches to server, validates receipts
-│
-├── notary.py             # Offline CLI: keygen / sign file / verify file
-│
-├── client.py             # Legacy raw TCP client (replay attack demo)
-├── server.py             # Legacy raw TCP server (replay attack demo)
-│
-├── requirements.txt      # Python dependencies
-├── contract.txt          # Example file for notary demo
-├── contract.txt.sig      # Example signature for notary demo
-│
-├── client_public.pem     # Client public key  (generated via setup)
-├── server_public.pem     # Server public key  (generated via setup)
-│
-└── .gitignore
-```
-
-> `client_private.pem`, `server_private.pem`, and `private.pem` are excluded from version control.
+1. **RSA-PSS Signatures:** Commands are wrapped in a JSON envelope and signed using a 2048-bit RSA Private Key. The server rejects any payload where the signature fails verification against the authorized Public Key.
+2. **Strict Time-Bounding:** Every payload contains a UNIX timestamp. The server drops any request older than 30 seconds, mitigating delayed-execution attacks.
+3. **Nonce Caching (Replay Defense):** To prevent an attacker from replaying a captured packet within the 30-second window, the client generates a unique UUID (Nonce) for every request. The server maintains a self-cleaning, in-memory cache of seen nonces and strictly rejects duplicates.
+4. **Shell Injection Prevention:** Commands are parsed using `shlex.split` and executed via Python's `subprocess` with `shell=False`. This completely bypasses the host OS shell, neutralizing command chaining (e.g., `; rm -rf /`) and injection attempts.
+5. **Mutual Non-Repudiation:** Upon execution, the server bundles the `stdout`, `stderr`, and original Nonce, signs it with its own Private Key, and returns it. The client verifies this receipt, ensuring the response was not spoofed by a Man-in-the-Middle (MITM).
 
 ---
 
-## Requirements
+## System Components
 
-- Python 3.8+
-
-Install all dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-`requirements.txt` includes: `cryptography`, `fastapi`, `uvicorn`, `pydantic`, `requests`
+| Component | Purpose |
+|---|---|
+| `crypto_engine.py` | The cryptographic core. Handles key generation, payload signing, RSA-PSS verification, and the self-cleaning hybrid Nonce/Timestamp cache. |
+| `server_agent.py` | The FastAPI daemon. Listens for requests, executes the verification pipeline, safely runs the command, and generates the signed execution receipt. |
+| `client_cli.py` | The Administrator CLI. Signs payloads, dispatches them to the target server, and cryptographically verifies the server's receipt before displaying output. |
 
 ---
 
-## Usage
+## Quickstart
 
-### Part 1 — File Notary (Offline)
+### 1. Requirements
+* Python 3.10+
+* `pip install -r requirements.txt` *(includes cryptography, fastapi, uvicorn, pydantic, requests)*
 
-#### Generate Keys
-
-```bash
-python notary.py keygen
-```
-
-Creates `private.pem` and `public.pem`. Refuses to overwrite existing keys.
-
-#### Sign a File
-
-```bash
-python notary.py sign contract.txt
-```
-
-Produces `contract.txt.sig` next to the file. Use `--key` to specify a custom private key path.
-
-#### Verify a File
-
-```bash
-python notary.py verify contract.txt contract.txt.sig
-```
-
-```
-[+] VERIFIED: The file is authentic and unaltered.
-[-] FAILED: The signature is invalid. The file has been tampered with or the wrong key was used.
-```
-
----
-
-### Part 2 — Zero-Trust Remote Execution Agent
-
-#### Step 1 — Generate Keypairs
-
+### 2. Provision Infrastructure Keys
+Generate the required RSA key pairs for both the Client and the Server:
 ```bash
 python client_cli.py setup
-```
-
-Generates `client_private.pem`, `client_public.pem`, `server_private.pem`, `server_public.pem`.
-
-#### Step 2 — Start the Server
-
-```bash
-uvicorn server_agent:app --host 127.0.0.1 --port 8000 --reload
-```
-
-The server loads `client_public.pem` (to verify incoming requests) and `server_private.pem` (to sign receipts).
-
-#### Step 3 — Run a Command
-
-```bash
-python client_cli.py run "whoami"
-python client_cli.py run "ls -la"
-```
-
-Example output:
-
-```
-[*] Signing command: 'whoami'
-[*] Dispatching to http://127.0.0.1:8000/api/v1/execute (Nonce: a3f1c...)
-[*] Receipt received. Verifying server signature...
-
-[+] --- SECURE EXECUTION RECEIPT VALIDATED ---
-Target Process Exit Code: 0
-
-[STDOUT]:
-desktop\user
-```
-
----
-
-### Part 3 — Legacy TCP Demo (Replay Attack Simulation)
-
-Start the raw TCP server:
-
-```bash
-python server.py
-```
-
-Send a normal signed message:
-
-```bash
-python client.py
-```
-
-Simulate a replay attack (timestamps the message 60 seconds in the past):
-
-```bash
-python client.py --replay
-```
-
-```
-[-] BLOCKED: Message is 60 seconds old. Replay attack detected.
-```
-
----
-
-## How It Works
-
-### `crypto_engine.py` — Shared Security Core
-
-All cryptographic operations go through `CryptoEngine`:
-
-| Method | Purpose |
-|---|---|
-| `generate_keypair()` | Creates a 2048-bit RSA key pair |
-| `create_signed_payload()` | Wraps a command with a timestamp + UUID nonce, signs the whole envelope with RSA-PSS + SHA-256 |
-| `verify_and_extract()` | Verifies signature → checks timestamp age → checks nonce hasn't been seen before |
-
-The nonce cache auto-expires entries older than `max_time_drift` to prevent memory leaks.
-
-### `server_agent.py` — FastAPI Execution Agent
-
-On every `POST /api/v1/execute`:
-
-1. **Cryptographic check** — verifies the client's RSA-PSS signature
-2. **Temporal check** — rejects messages older than 30 seconds
-3. **Replay check** — rejects any nonce seen before in the current window
-4. **Safe execution** — runs the command via `subprocess.run` with `shell=False` and `shlex.split`, with a 15-second hard timeout
-5. **Signed receipt** — signs and returns the stdout/stderr/exit code so the client can verify the response wasn't tampered with
-
-### `client_cli.py` — Admin CLI
-
-1. Signs the command payload with `client_private.pem`
-2. POSTs to the server and receives a signed receipt
-3. Verifies the receipt using `server_public.pem`
-4. Validates the `original_nonce` in the receipt matches the request — detects MITM/replay on the response side
-
----
-
-## Security Notes
-
-- Private keys (`*_private.pem`) are stored unencrypted. In production, protect them with a passphrase or a secrets manager and restrict OS file permissions (`chmod 400`).
-- The replay window defaults to **30 seconds** — client and server clocks must be roughly in sync (NTP recommended for production).
-- `shell=False` in subprocess execution prevents shell injection. Do not change this.
-- This project is a security learning tool and local demonstration. It is not a production-grade PKI or remote execution system.

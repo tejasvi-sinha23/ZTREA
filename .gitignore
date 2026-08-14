@@ -1,5 +1,14 @@
-# Private keys — never commit these
+# Private keys — NEVER commit these
 private.pem
+client_private.pem
+server_private.pem
+*.pem
+
+# Allow public keys
+!public.pem
+!client_public.pem
+!server_public.pem
+!server_public.pem
 
 # Python
 __pycache__/
@@ -12,6 +21,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# Virtual environment
 .env
 .venv
 venv/

@@ -111,9 +111,3 @@ To truly understand a security system, you must attempt to break it. Use the sim
 
 ---
 
-## Security Notes
-
-- Private keys (`*_private.pem`) are stored unencrypted. In production, protect them with a passphrase or a secrets manager and restrict OS file permissions (`chmod 400`).
-- The replay window defaults to **30 seconds** — client and server clocks must be roughly in sync (NTP recommended for production).
-- `shell=False` in subprocess execution prevents shell injection. Do not change this.
-- This project is a security learning tool and local demonstration. It is not a production-grade PKI or remote execution system.
